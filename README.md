@@ -134,7 +134,7 @@ f(ptr);                         //传递const char * const类型的实参
 
 在这里，解引用符号（*）的右边的`const`表示`ptr`本身是一个`const`：`ptr`不能被修改为指向其它地址，也不能被设置为null（解引用符号左边的`const`表示`ptr`指向一个字符串，这个字符串是`const`，因此字符串不能被修改）。当`ptr`作为实参传给`f`，组成这个指针的每一比特都被拷贝进`param`。像这种情况，==`ptr`**自身的值会被传给形参**==，根据类型推导的第三条规则，==`ptr`自身的常量性`const`ness将会被省略==，所以`param`是`const char*`，也就是一个可变指针指向`const`字符串。在类型推导中，这个指针指向的数据的常量性`const`ness将会被保留，但是当拷贝`ptr`来创造一个新指针`param`时，`ptr`自身的常量性`const`ness将会被忽略。
 
-**数组实参**
+**数组做实参**
 
 ​	上面的类型推导已经涵盖了很大一部分，但是还有个值得注意的地方就是数组类型不同于指针类型，虽然有时候可以互换。关于这个错觉最常见的例子是，在很多上下文中数组会退化为指向它的第一个元素的指针。这样的退化允许像这样的代码可以被编译：
 
@@ -204,7 +204,7 @@ std::array<int, arraySize(keyVals)> mappedVals;         //mappedVals的大小为
 
 至于`arraySize`被声明为`noexcept`，会使得编译器生成更好的代码，具体的细节请参见[Item14](https://cntransgroup.github.io/EffectiveModernCppChinese/3.MovingToModernCpp/item14.html)。
 
-**函数实参**
+**函数做实参**
 
 在C++中不只是数组会退化为指针，函数类型也会退化为一个函数指针，我们对于数组类型推导的全部讨论都可以应用到函数类型推导和退化为函数指针上来。结果是：
 
