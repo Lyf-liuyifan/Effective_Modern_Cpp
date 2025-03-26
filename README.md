@@ -268,6 +268,8 @@ f2(someFunc);                       //param被推导为指向函数的引用，
 
 ### 1.3理解decltyp
 
+#### 1.3.1使用decltype是为了推导模板返回的左值引用类型
+
 ​	decltype通常用于声明函数模板，auto也可以用于推到函数返回值，但是问题就是auto作为函数返回值会采用模板推导类型， 而模板类型推导会自动忽略引用类型，所以这是弊端，而使用decltype就不会有这种问题。
 
 ```cpp
@@ -278,7 +280,9 @@ authAndAccess(d, 5) = 10;               //认证用户，返回d[5]，
                                         //无法通过编译！
 ```
 
-为什么需要推导引用类型呢？在C++11中，`decltype`最主要的用途就是用于声明函数模板，而这个函数返回类型依赖于形参类型。举个例子，假定我们写一个函数，一个形参为容器，一个形参为索引值，这个函数支持使用方括号的方式（也就是使用“`[]`”）访问容器中指定索引值的数据，然后在返回索引操作的结果前执行认证用户操作。函数的返回类型应该和索引操作返回的类型相同。
+​	
+
+​	为什么需要推导引用类型呢？在C++11中，`decltype`最主要的用途就是用于声明函数模板，而这个函数返回类型依赖于形参类型。举个例子，假定我们写一个函数，一个形参为容器，一个形参为索引值，这个函数支持使用方括号的方式（也就是使用“`[]`”）访问容器中指定索引值的数据，然后在返回索引操作的结果前执行认证用户操作。函数的返回类型应该和索引操作返回的类型相同。
 
 对一个`T`类型的容器使用`operator[]` 通常会返回一个`T&`对象，比如`std::deque`就是这样。但是`std::vector`有一个例外，对于`std::vector<bool>`，`operator[]`不会返回`bool&`，它会返回一个全新的对象（译注：MSVC的STL实现中返回的是`std::_Vb_reference<std::_Wrap_alloc<std::allocator<unsigned int>>>`对象）。关于这个问题的详细讨论请参见[Item6](https://cntransgroup.github.io/EffectiveModernCppChinese/2.Auto/item6.html)，这里重要的是我们可以看到对一个容器进行`operator[]`操作返回的类型取决于容器本身。
 
@@ -430,3 +434,333 @@ decltype(auto) f2()
 - `decltype`总是不加修改的产生变量或者表达式的类型。
 - 对于`T`类型的不是单纯的变量名的左值表达式，`decltype`总是产出`T`的引用即`T&`。
 - C++14支持`decltype(auto)`，就像`auto`一样，推导出类型，但是它使用`decltype`的规则进行推导。
+
+### 1.4学会查看类型推导结果
+
+选择什麼工具查看类型推导，取决于软件开发过程中你想在哪个阶段显示类型推导信息。我们探究三种方案：在你编辑代码的时候获得类型推导的结果，在编译期间获得结果，在运行时获得结果。
+
+#### **1.4.1IDE编辑器**
+
+在IDE中的代码编辑器通常可以显示程序代码中变量，函数，参数的类型，你只需要简单的把鼠标移到它们的上面，举个例子，有这样的代码中：
+
+```cpp
+const int theAnswer = 42;
+
+auto x = theAnswer;
+auto y = &theAnswer;
+```
+
+IDE编辑器可以直接显示`x`推导的结果为`int`，`y`推导的结果为`const int*`。
+
+为此，你的代码必须或多或少的处于可编译状态，因为IDE之所以能提供这些信息是因为一个C++编译器（或者至少是前端中的一个部分）运行于IDE中。如果这个编译器对你的代码不能做出有意义的分析或者推导，它就不会显示推导的结果。
+
+对于像`int`这样简单的推导，IDE产生的信息通常令人很满意。正如我们将看到的，如果更复杂的类型出现时，IDE提供的信息就几乎没有什么用了。
+
+#### **1.4.2编译器诊断**
+
+另一个获得推导结果的方法是使用编译器出错时提供的错误消息。这些错误消息无形的提到了造成我们编译错误的类型是什么。
+
+举个例子，假如我们想看到之前那段代码中`x`和`y`的类型，我们可以首先声明一个类模板但**不定义**。就像这样：
+
+```cpp
+template<typename T>                //只对TD进行声明
+class TD;                           //TD == "Type Displayer"
+```
+
+如果尝试实例化这个类模板就会引出一个错误消息，因为这里没有用来实例化的类模板定义。为了查看`x`和`y`的类型，只需要使用它们的类型去实例化`TD`：
+
+```cpp
+TD<decltype(x)> xType;              //引出包含x和y
+TD<decltype(y)> yType;              //的类型的错误消息
+```
+
+我使用***variableName*****Type**的结构来命名变量，因为这样它们产生的错误消息可以有助于我们查找。对于上面的代码，我的编译器产生了这样的错误信息，我取一部分贴到下面：
+
+```cpp
+error: aggregate 'TD<int> xType' has incomplete type and 
+        cannot be defined
+error: aggregate 'TD<const int *> yType' has incomplete type and
+        cannot be defined
+```
+
+另一个编译器也产生了一样的错误，只是格式稍微改变了一下：
+
+```cpp
+error: 'xType' uses undefined class 'TD<int>'
+error: 'yType' uses undefined class 'TD<const int *>'
+```
+
+除了格式不同外，几乎所有我测试过的编译器都产生了这样有用的错误消息。
+
+#### **1.4.3运行时输出**
+
+使用`printf`的方法（并不是说我推荐你使用`printf`）类型信息要在运行时才会显示出来，但是它提供了一种格式化输出的方法。现在唯一的问题是对于你关心的变量使用一种优雅的文本表示。“这有什么难的，“你这样想，”这正是`typeid`和`std::type_info::name`的价值所在”。为了实现我们想要查看`x`和`y`的类型的需求，你可能会这样写：
+
+```cpp
+std::cout << typeid(x).name() << '\n';  //显示x和y的类型
+std::cout << typeid(y).name() << '\n';
+```
+
+这种方法对一个对象如`x`或`y`调用`typeid`产生一个`std::type_info`的对象，然后`std::type_info`里面的成员函数`name()`来产生一个C风格的字符串（即一个`const char*`）表示变量的名字。
+
+调用`std::type_info::name`不保证返回任何有意义的东西，但是库的实现者尝试尽量使它们返回的结果有用。实现者们对于“有用”有不同的理解。举个例子，GNU和Clang环境下`x`的类型会显示为”`i`“，`y`会显示为”`PKi`“，这样的输出你必须要问问编译器实现者们才能知道他们的意义：”`i`“表示”`int`“，”`PK`“表示”pointer to ~~`konst`~~ `const`“（指向常量的指针）。（这些编译器都提供一个工具`c++filt`，解释这些“混乱的”类型）Microsoft的编译器输出得更直白一些：对于`x`输出”`int`“对于`y`输出”`int const *`“
+
+因为对于`x`和`y`来说这样的结果是正确的，你可能认为问题已经接近了，别急，考虑一个更复杂的例子：
+
+```cpp
+template<typename T>                    //要调用的模板函数
+void f(const T& param);
+
+std::vector<Widget> createVec();        //工厂函数
+
+const auto vw = createVec();            //使用工厂函数返回值初始化vw
+
+if (!vw.empty()){
+    f(&vw[0]);                          //调用f
+    …
+}
+```
+
+在这段代码中包含了一个用户定义的类型`Widget`，一个STL容器`std::vector`和一个`auto`变量`vw`，这个更现实的情况是你可能会遇到的并且想获得他们类型推导的结果，比如模板类型形参`T`，比如函数`f`形参`param`。
+
+从这里中我们不难看出`typeid`的问题所在。我们在`f`中添加一些代码来显示类型：
+
+```cpp
+template<typename T>
+void f(const T& param)
+{
+    using std::cout;
+    cout << "T =     " << typeid(T).name() << '\n';             //显示T
+
+    cout << "param = " << typeid(param).name() << '\n';         //显示
+    …                                                           //param
+}                                                               //的类型
+```
+
+GNU和Clang执行这段代码将会输出这样的结果
+
+```cpp
+T =     PK6Widget
+param = PK6Widget
+```
+
+我们早就知道在这些编译器中`PK`表示“pointer to `const`”，所以只有数字`6`对我们来说是神奇的。其实数字是类名称（`Widget`）的字符串长度，所以这些编译器告诉我们`T`和`param`都是`const Widget*`。
+
+Microsoft的编译器也同意上述言论：
+
+```cpp
+T =     class Widget const *
+param = class Widget const *
+```
+
+三个独立的编译器都产生了相同的信息，这表明信息应该是准确的。但仔细观察一下，在模板`f`中，`param`的声明类型是`const T&`。难道你们不觉得`T`和`param`类型相同很奇怪吗？比如`T`是`int`，`param`的类型应该是`const int&`而不是相同类型才对吧。
+
+遗憾的是，事实就是这样，`std::type_info::name`的结果并不总是可信的，就像上面一样，三个编译器对`param`的报告都是错误的。此外，它们在本质上必须是这样的结果，因为`std::type_info::name`规范批准像传值形参一样来对待这些类型。正如[Item1](https://cntransgroup.github.io/EffectiveModernCppChinese/1.DeducingTypes/item1.html)提到的，如果传递的是一个引用，那么引用部分（reference-ness）将被忽略，如果忽略后还具有`const`或者`volatile`，那么常量性`const`ness或者易变性`volatile`ness也会被忽略。那就是为什么`param`的类型`const Widget * const &`会输出为`const Widget *`，首先引用被忽略，然后这个指针自身的常量性`const`ness被忽略，剩下的就是指针指向一个常量对象。
+
+同样遗憾的是，IDE编辑器显示的类型信息也不总是可靠的，或者说不总是有用的。还是一样的例子，一个IDE编辑器可能会把`T`的类型显示为（我没有胡编乱造）：
+
+```cpp
+const
+std::_Simple_types<std::_Wrap_alloc<std::_Vec_base_types<Widget,
+std::allocator<Widget>>::_Alloc>::value_type>::value_type *
+```
+
+同样把`param`的类型显示为
+
+```cpp
+const std::_Simple_types<...>::value_type *const &
+```
+
+这个比起`T`来说要简单一些，但是如果你不知道“`...`”表示编译器忽略`T`的部分类型那么可能你还是会产生困惑。如果你运气好点你的IDE可能表现得比这个要好一些。
+
+比起运气如果你更倾向于依赖库，那么你会很乐意被告知，在`std::type_info::name`和IDE失效的地方，Boost TypeIndex库（通常写作**Boost.TypeIndex**）被设计成可以正常运作。这个库不是标准C++的一部分，也不是IDE或者`TD`这样的模板。Boost库（可在[boost.com](http://boost.org/)获得）是跨平台，开源，有良好的开源协议的库，这意味着使用Boost和STL一样具有高度可移植性。
+
+这里是如何使用Boost.TypeIndex得到`f`的类型的代码
+
+```cpp
+#include <boost/type_index.hpp>
+
+template<typename T>
+void f(const T& param)
+{
+    using std::cout;
+    using boost::typeindex::type_id_with_cvr;
+
+    //显示T
+    cout << "T =     "
+         << type_id_with_cvr<T>().pretty_name()
+         << '\n';
+    
+    //显示param类型
+    cout << "param = "
+         << type_id_with_cvr<decltype(param)>().pretty_name()
+         << '\n';
+}
+```
+
+`boost::typeindex::type_id_with_cvr`获取一个类型实参（我们想获得相应信息的那个类型），它不消除实参的`const`，`volatile`和引用修饰符（因此模板名中有“`with_cvr`”）。结果是一个`boost::typeindex::type_index`对象，它的`pretty_name`成员函数输出一个`std::string`，包含我们能看懂的类型表示。 基于这个`f`的实现版本，再次考虑那个使用`typeid`时获取`param`类型信息出错的调用：
+
+```cpp
+std::vetor<Widget> createVec();         //工厂函数
+const auto vw = createVec();            //使用工厂函数返回值初始化vw
+if (!vw.empty()){
+    f(&vw[0]);                          //调用f
+    …
+}
+```
+
+在GNU和Clang的编译器环境下，使用Boost.TypeIndex版本的`f`最后会产生下面的（准确的）输出：
+
+```cpp
+T =     Widget const *
+param = Widget const * const&
+```
+
+在Microsoft的编译器环境下，结果也是极其相似：
+
+```cpp
+T =     class Widget const *
+param = class Widget const * const &
+```
+
+这样近乎一致的结果是很不错的，但是请记住IDE，编译器错误诊断或者像Boost.TypeIndex这样的库只是用来帮助你理解编译器推导的类型是什么。它们是有用的，但是作为本章结束语我想说它们根本不能替代你对[Item1](https://cntransgroup.github.io/EffectiveModernCppChinese/1.DeducingTypes/item1.html)-[3](https://cntransgroup.github.io/EffectiveModernCppChinese/1.DeducingTypes/item3.html)提到的类型推导的理解。
+
+**请记住：**
+
+- 类型推断可以从IDE看出，从编译器报错看出，从Boost TypeIndex库的使用看出
+- 这些工具可能既不准确也无帮助，所以理解C++类型推导规则才是最重要的
+
+## 2.auto
+
+### 2.1优先考虑auto而非显示类型声明
+
+​	从C++11开始我们可以用auto来表示很多很难写出来的类型（闭包类型，只有编译器才知道的类型）比如模板中迭代器解引用才能表达出来的
+
+```cpp
+template<typename It>           //对从b到e的所有元素使用
+void dwim(It b, It e)           //dwim（“do what I mean”）算法
+{
+    while (b != e) {
+        typename std::iterator_traits<It>::value_type
+        currValue = *b;
+        …
+    }
+}
+```
+
+但是有了auto就不需要这样了。auto甚至可以表示一些只有编译器才知道的类型：
+
+```cpp
+auto derefUPLess = 
+    [](const std::unique_ptr<Widget> &p1,       //用于std::unique_ptr
+       const std::unique_ptr<Widget> &p2)       //指向的Widget类型的
+    { return *p1 < *p2; };                      //比较函数
+```
+
+很酷对吧，如果使用C++14，将会变得更酷，因为*lambda*表达式中的形参也可以使用`auto`：
+
+```cpp
+auto derefLess =                                //C++14版本
+    [](const auto& p1,                          //被任何像指针一样的东西
+       const auto& p2)                          //指向的值的比较函数
+    { return *p1 < *p2; };
+```
+
+尽管这很酷，但是你可能会想我们完全不需要使用`auto`声明局部变量来保存一个闭包，因为我们可以使用`std::function`对象。
+
+**function对象：**
+
+​	std::function是一个C++11标准库中一个模板，它==泛化==了函数指针的概念。让它可以指向任何可调用对象。当你声明函数指针时你必须指定函数类型（即函数签名），同样当你创建`std::function`对象时你也需要提供函数签名，由于它是一个模板所以你需要在它的模板参数里面提供。举个例子，假设你想声明一个`std::function`对象`func`使它指向一个可调用对象，比如一个具有这样函数签名的函数
+
+```cpp
+bool(const std::unique_ptr<Widget> &,           //C++11
+     const std::unique_ptr<Widget> &)           //std::unique_ptr<Widget>
+                                                //比较函数的签名
+```
+
+你就得这么写：
+
+```cpp
+std::function<bool(const std::unique_ptr<Widget> &,
+                   const std::unique_ptr<Widget> &)> func;
+```
+
+因为*lambda*表达式能产生一个可调用对象，所以我们现在可以把闭包存放到`std::function`对象中。这意味着我们可以不使用`auto`写出C++11版的`derefUPLess`：
+
+```cpp
+std::function<bool(const std::unique_ptr<Widget> &,
+                   const std::unique_ptr<Widget> &)>
+derefUPLess = [](const std::unique_ptr<Widget> &p1,
+                 const std::unique_ptr<Widget> &p2)
+                { return *p1 < *p2; };
+```
+
+用function和auto相比有很多缺点。
+
+1. 消耗更多存储空间，且可能触发out-of-memory异常。
+2. 而且function更慢。
+
+**原因**：用`auto`声明的变量保存一个和闭包一样类型的（新）闭包，因此使用了与闭包相同大小存储空间。实例化`std::function`并声明一个对象这个对象将会有固定的大小。这个大小可能不足以存储一个闭包，这个时候`std::function`的构造函数将会在堆上面分配内存来存储，这就造成了使用`std::function`比`auto`声明变量会消耗更多的内存。
+
+**auto可以避免一些移植时发生的问题**：
+
+- 类型快捷方式（type shortcuts）有关的问题：
+
+  - ```cpp
+    std::vector<int> v;
+    …
+    unsigned sz = v.size();
+    ```
+
+    `v.size()`的标准返回类型是`std::vector<int>::size_type`，但是只有少数开发者意识到这点。`std::vector<int>::size_type`实际上被指定为无符号整型，所以很多人都认为用`unsigned`就足够了，写下了上述的代码。这会造成一些有趣的结果。举个例子，在**Windows 32-bit**上`std::vector<int>::size_type`和`unsigned`是一样的大小，但是在**Windows 64-bit**上`std::vector<int>::size_type`是64位，`unsigned`是32位。这意味着这段代码在Windows 32-bit上正常工作，但是当把应用程序移植到Windows 64-bit上时就可能会出现一些问题。谁愿意花时间处理这些细枝末节的问题呢？
+
+    所以使用`auto`可以确保你不需要浪费时间：
+
+    ```cpp
+    auto sz =v.size();                      //sz的类型是std::vector<int>::size_type
+    ```
+
+    你还是不相信使用`auto`是多么明智的选择？考虑下面的代码：
+
+    ```cpp
+    std::unordered_map<std::string, int> m;
+    …
+    
+    for(const std::pair<std::string, int>& p : m)
+    {
+        …                                   //用p做一些事
+    }
+    ```
+
+    看起来好像很合情合理的表达，但是这里有一个问题，你看到了吗？
+
+    要想看到错误你就得知道`std::unordered_map`的*key*是`const`的，所以*hash table*（`std::unordered_map`本质上的东西）中的`std::pair`的类型不是`std::pair<std::string, int>`，而是`std::pair<const std::string, int>`。但那不是在循环中的变量`p`声明的类型。编译器会努力的找到一种方法把`std::pair<const std::string, int>`（即*hash table*中的东西）转换为`std::pair<std::string, int>`（`p`的声明类型）。它会成功的，因为它会通过拷贝`m`中的对象创建一个临时对象，这个临时对象的类型是`p`想绑定到的对象的类型，即`m`中元素的类型，然后把`p`的引用绑定到这个临时对象上。在每个循环迭代结束时，临时对象将会销毁，如果你写了这样的一个循环，你可能会对它的一些行为感到非常惊讶，因为你确信你只是让成为`p`指向`m`中各个元素的引用而已。
+
+    使用`auto`可以避免这些很难被意识到的类型不匹配的错误：
+
+    ```cpp
+    for(const auto& p : m)
+    {
+        …                                   //如之前一样
+    }
+    ```
+
+    这样无疑更具效率，且更容易书写。而且，这个代码有一个非常吸引人的特性，如果你获取`p`的地址，你确实会得到一个指向`m`中元素的指针。在没有`auto`的版本中`p`会指向一个临时变量，这个临时变量在每次迭代完成时会被销毁。
+
+    前面这两个例子——应当写`std::vector<int>::size_type`时写了`unsigned`，应当写`std::pair<const std::string, int>`时写了`std::pair<std::string, int>`——说明了显式的指定类型可能会导致你不想看到的类型转换。如果你使用`auto`声明目标变量你就不必担心这个问题。
+
+    基于这些原因我建议你优先考虑`auto`而非显式类型声明。然而`auto`也不是完美的。每个`auto`变量都从初始化表达式中推导类型，有一些表达式的类型和我们期望的大相径庭。关于在哪些情况下会发生这些问题，以及你可以怎么解决这些问题我们在[Item2](https://cntransgroup.github.io/EffectiveModernCppChinese/1.DeducingTypes/item2.html)和[6](https://cntransgroup.github.io/EffectiveModernCppChinese/2.Auto/item6.html)讨论，所以这里我不再赘述。我想把注意力放到你可能关心的另一点：使用auto代替传统类型声明对源码可读性的影响。
+
+    首先，深呼吸，放松，`auto`是**可选项**，不是**命令**，在某些情况下如果你的专业判断告诉你使用显式类型声明比`auto`要更清晰更易维护，那你就不必再坚持使用`auto`。但是要牢记，C++没有在其他众所周知的语言所拥有的类型推导（*type inference*）上开辟新土地。其他静态类型的过程式语言（如C#、D、Sacla、Visual Basic）或多或少都有等价的特性，更不必提那些静态类型的函数式语言了（如ML、Haskell、OCaml、F#等）。在某种程度上，这是因为动态类型语言，如Perl、Python、Ruby等的成功；在这些语言中，几乎没有显式的类型声明。软件开发社区对于类型推导有丰富的经验，他们展示了在维护大型工业强度的代码上使用这种技术没有任何争议。
+
+    一些开发者也担心使用`auto`就不能瞥一眼源代码便知道对象的类型，然而，IDE扛起了部分担子（也考虑到了[Item4](https://cntransgroup.github.io/EffectiveModernCppChinese/1.DeducingTypes/item4.html)中提到的IDE类型显示问题），在很多情况下，少量显示一个对象的类型对于知道对象的确切类型是有帮助的，这通常已经足够了。举个例子，要想知道一个对象是容器还是计数器还是智能指针，不需要知道它的确切类型。一个适当的变量名称就能告诉我们大量的抽象类型信息。
+
+    事实是显式指定类型通常只会引入一些微妙的错误，无论是在正确性还是效率方面。而且，如果初始化表达式的类型改变，则`auto`推导出的类型也会改变，这意味着使用`auto`可以帮助我们完成一些重构工作。举个例子，如果一个函数返回类型被声明为`int`，但是后来你认为将它声明为`long`会更好，调用它作为初始化表达式的变量会自动改变类型，但是如果你不使用`auto`你就不得不在源代码中挨个找到调用地点然后修改它们。
+
+    **请记住：**
+
+    - `auto`变量必须初始化，通常它可以避免一些移植性和效率性的问题，也使得重构更方便，还能让你少打几个字。
+    - 正如[Item2](https://cntransgroup.github.io/EffectiveModernCppChinese/1.DeducingTypes/item2.html)和[6](https://cntransgroup.github.io/EffectiveModernCppChinese/2.Auto/item6.html)讨论的，`auto`类型的变量可能会踩到一些陷阱。
+
+### 2.2auto推导若非己愿，使用显示类型初始化惯用法
+
