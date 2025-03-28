@@ -1148,3 +1148,296 @@ doSomeWork<std::vector<int>>(10, 20);
 - 在构造函数重载决议中，编译器会尽最大努力将括号初始化与`std::initializer_list`参数匹配，即便其他构造函数看起来是更好的选择
 - 对于数值类型的`std::vector`来说使用花括号初始化和圆括号初始化会造成巨大的不同
 - 在模板类选择使用圆括号初始化或使用花括号初始化创建对象是一个挑战。
+
+### 3.2优先考虑nullptr而非0和NULL
+
+==这个就记住函数重载会出问题就好了==
+
+**当函数参数有多个重载时，使用0或NULL可能不能调用你想使用的那个函数：**
+
+​	字面值`0`是一个`int`不是指针。如果C++发现在当前上下文只能使用指针，它会很不情愿的把`0`解释为指针，但是那是最后的退路。一般来说C++的解析策略是把`0`看做`int`而不是指针。
+
+实际上，`NULL`也是这样的。但在`NULL`的实现细节有些不确定因素，因为实现被允许给`NULL`一个除了`int`之外的整型类型（比如`long`）。这不常见，但也算不上问题所在。这里的问题不是`NULL`没有一个确定的类型，而是`0`和`NULL`都不是指针类型。
+
+在C++98中，对指针类型和整型进行重载意味着可能导致奇怪的事情。如果给下面的重载函数传递`0`或`NULL`，它们绝不会调用指针版本的重载函数：
+
+```cpp
+void f(int);        //三个f的重载函数
+void f(bool);
+void f(void*);
+
+f(0);               //调用f(int)而不是f(void*)
+
+f(NULL);            //可能不会被编译，一般来说调用f(int)，
+                    //绝对不会调用f(void*)
+```
+
+而`f(NULL)`的不确定行为是由`NULL`的实现不同造成的。如果`NULL`被定义为`0L`（指的是`0`为`long`类型），这个调用就具有二义性，因为从`long`到`int`的转换或从`long`到`bool`的转换或`0L`到`void*`的转换都同样好。有趣的是源代码**表现出**的意思（“我使用空指针`NULL`调用`f`”）和**实际表达出**的意思（“我是用整型数据而不是空指针调用`f`”）是相矛盾的。这种违反直觉的行为导致C++98程序员都将避开同时重载指针和整型作为编程准则（译注：请务必注意结合上下文使用这条规则）。在C++11中这个编程准则也有效，因为尽管我这个条款建议使用`nullptr`，可能很多程序员还是会继续使用`0`或`NULL`，哪怕`nullptr`是更好的选择。`nullptr`的优点是它不是整型。老实说它也不是一个指针类型，但是你可以把它认为是**所有**类型的指针。`nullptr`的真正类型是`std::nullptr_t`，在一个完美的循环定义以后，`std::nullptr_t`又被定义为`nullptr`。`std::nullptr_t`可以隐式转换为指向任何内置类型的指针，这也是为什么`nullptr`表现得像所有类型的指针。
+
+使用`nullptr`调用`f`将会调用`void*`版本的重载函数，因为`nullptr`不能被视作任何整型：
+
+```cpp
+f(nullptr);         //调用重载函数f的f(void*)版本
+```
+
+使用`nullptr`代替`0`和`NULL`可以避开了那些令人奇怪的函数重载决议，这不是它的唯一优势。它也可以使代码表意明确，尤其是当涉及到与`auto`声明的变量一起使用时。举个例子，假如你在一个代码库中遇到了这样的代码：
+
+```cpp
+auto result = findRecord( /* arguments */ );
+if (result == 0) {
+    …
+} 
+```
+
+如果你不知道`findRecord`返回了什么（或者不能轻易的找出），那么你就不太清楚到底`result`是一个指针类型还是一个整型。毕竟，`0`（用来测试`result`的值的那个）也可以像我们之前讨论的那样被解析。但是换一种假设如果你看到这样的代码：
+
+```cpp
+auto result = findRecord( /* arguments */ );
+
+if (result == nullptr) {  
+    …
+}
+```
+
+这就没有任何歧义：`result`的结果一定是指针类型。
+
+当模板出现时`nullptr`就更有用了。假如你有一些函数只能被合适的已锁互斥量调用。每个函数都有一个不同类型的指针：
+
+```cpp
+int    f1(std::shared_ptr<Widget> spw);     //只能被合适的
+double f2(std::unique_ptr<Widget> upw);     //已锁互斥量
+bool   f3(Widget* pw);                      //调用
+```
+
+如果这样传递空指针：
+
+```cpp
+std::mutex f1m, f2m, f3m;       //用于f1，f2，f3函数的互斥量
+
+using MuxGuard =                //C++11的typedef，参见Item9
+    std::lock_guard<std::mutex>;
+…
+
+{  
+    MuxGuard g(f1m);            //为f1m上锁
+    auto result = f1(0);        //向f1传递0作为空指针
+}                               //解锁 
+…
+{  
+    MuxGuard g(f2m);            //为f2m上锁
+    auto result = f2(NULL);     //向f2传递NULL作为空指针
+}                               //解锁 
+…
+{
+    MuxGuard g(f3m);            //为f3m上锁
+    auto result = f3(nullptr);  //向f3传递nullptr作为空指针
+}                               //解锁 
+```
+
+令人遗憾前两个调用没有使用`nullptr`，但是代码可以正常运行，这也许对一些东西有用。但是重复的调用代码——为互斥量上锁，调用函数，解锁互斥量——更令人遗憾。它让人很烦。模板就是被设计于减少重复代码，所以让我们模板化这个调用流程：
+
+```cpp
+template<typename FuncType,
+         typename MuxType,
+         typename PtrType>
+auto lockAndCall(FuncType func,                 
+                 MuxType& mutex,                 
+                 PtrType ptr) -> decltype(func(ptr))
+{
+    MuxGuard g(mutex);  
+    return func(ptr); 
+}
+```
+
+如果你对函数返回类型（`auto ... -> decltype(func(ptr))`）感到困惑不解，[Item3](https://cntransgroup.github.io/EffectiveModernCppChinese/1.DeducingTypes/item3.html)可以帮助你。在C++14中代码的返回类型还可以被简化为`decltype(auto)`：
+
+```cpp
+template<typename FuncType,
+         typename MuxType,
+         typename PtrType>
+decltype(auto) lockAndCall(FuncType func,       //C++14
+                           MuxType& mutex,
+                           PtrType ptr)
+{ 
+    MuxGuard g(mutex);  
+    return func(ptr); 
+}
+```
+
+可以写这样的代码调用`lockAndCall`模板（两个版本都可）：
+
+```cpp
+auto result1 = lockAndCall(f1, f1m, 0);         //错误！
+...
+auto result2 = lockAndCall(f2, f2m, NULL);      //错误！
+...
+auto result3 = lockAndCall(f3, f3m, nullptr);   //没问题
+```
+
+代码虽然可以这样写，但是就像注释中说的，前两个情况不能通过编译。在第一个调用中存在的问题是当`0`被传递给`lockAndCall`模板，模板类型推导会尝试去推导实参类型，`0`的类型总是`int`，所以这就是这次调用`lockAndCall`实例化出的`ptr`的类型。不幸的是，这意味着`lockAndCall`中`func`会被`int`类型的实参调用，这与`f1`期待的`std::shared_ptr<Widget>`形参不符。传递`0`给`lockAndCall`本来想表示空指针，但是实际上得到的一个普通的`int`。把`int`类型看做`std::shared_ptr<Widget>`类型给`f1`自然是一个类型错误。在模板`lockAndCall`中使用`0`之所以失败是因为在模板中，传给的是`int`但实际上函数期待的是一个`std::shared_ptr<Widget>`。
+
+第二个使用`NULL`调用的分析也是一样的。当`NULL`被传递给`lockAndCall`，形参`ptr`被推导为整型（译注：由于依赖于具体实现所以不一定是整数类型，所以用整型泛指`int`，`long`等类型），然后当`ptr`——一个`int`或者类似`int`的类型——传递给`f2`的时候就会出现类型错误，`f2`期待的是`std::unique_ptr<Widget>`。
+
+然而，使用`nullptr`是调用没什么问题。当`nullptr`传给`lockAndCall`时，`ptr`被推导为`std::nullptr_t`。当`ptr`被传递给`f3`的时候，隐式转换使`std::nullptr_t`转换为`Widget*`，因为`std::nullptr_t`可以隐式转换为任何指针类型。
+
+模板类型推导将`0`和`NULL`推导为一个错误的类型（即它们的实际类型，而不是作为空指针的隐含意义），这就导致在当你想要一个空指针时，它们的替代品`nullptr`很吸引人。使用`nullptr`，模板不会有什么特殊的转换。另外，使用`nullptr`不会让你受到同重载决议特殊对待`0`和`NULL`一样的待遇。当你想用一个空指针，使用`nullptr`，不用`0`或者`NULL`。
+
+**记住**
+
+- 优先考虑`nullptr`而非`0`和`NULL`
+- 避免重载指针和整型
+
+### 3.3优先考虑别名声明而非typedef
+
+我相信每个人都同意使用STL容器是个好主意，并且我希望Item18能说服你让你觉得使用`std:unique_ptr`也是个好主意，但我猜没有人喜欢写上几次 `std::unique_ptr<std::unordered_map<std::string, std::string>>`这样的类型，它可能会让你患上腕管综合征的风险大大增加。
+
+避免上述医疗悲剧也很简单，引入`typedef`即可：
+
+```cpp
+typedef
+    std::unique_ptr<std::unordered_map<std::string, std::string>>
+    UPtrMapSS; 
+```
+
+但`typedef`是C++98的东西。虽然它可以在C++11中工作，但是C++11也提供了一个别名声明（*alias declaration*）：
+
+```cpp
+using UPtrMapSS =
+    std::unique_ptr<std::unordered_map<std::string, std::string>>;
+```
+
+由于这里给出的`typedef`和别名声明做的都是完全一样的事情，我们有理由想知道会不会出于一些技术上的原因两者有一个更好。
+
+这里，在说它们之前我想提醒一下很多人都发现当声明一个函数指针时别名声明更容易理解：
+
+```cpp
+//FP是一个指向函数的指针的同义词，它指向的函数带有
+//int和const std::string&形参，不返回任何东西
+typedef void (*FP)(int, const std::string&);    //typedef
+
+//含义同上
+using FP = void (*)(int, const std::string&);   //别名声明
+```
+
+当然，两个结构都不是非常让人满意，没有人喜欢花大量的时间处理函数指针类型的别名（译注：指`FP`），所以至少在这里，没有一个吸引人的理由让你觉得别名声明比`typedef`好。
+
+==**当你用using起别名的时候可以省去很多地方的麻烦，比如模板中的麻烦**==
+
+不过有一个地方使用别名声明吸引人的理由是存在的：模板。特别地，别名声明可以被模板化（这种情况下称为别名模板*alias template*s）但是`typedef`不能。这使得C++11程序员可以很直接的表达一些C++98中只能把`typedef`嵌套进模板化的`struct`才能表达的东西。考虑一个链表的别名，链表使用自定义的内存分配器，`MyAlloc`。使用别名模板，这真是太容易了：
+
+```cpp
+template<typename T>                            //MyAllocList<T>是
+using MyAllocList = std::list<T, MyAlloc<T>>;   //std::list<T, MyAlloc<T>>
+                                                //的同义词
+
+MyAllocList<Widget> lw;                         //用户代码
+```
+
+使用`typedef`，你就只能从头开始：
+
+```cpp
+template<typename T>                            //MyAllocList<T>是
+struct MyAllocList {                            //std::list<T, MyAlloc<T>>
+    typedef std::list<T, MyAlloc<T>> type;      //的同义词  
+};
+
+MyAllocList<Widget>::type lw;                   //用户代码
+```
+
+更糟糕的是，如果你想使用在一个模板内使用`typedef`声明一个链表对象，而这个对象又使用了模板形参，你就不得不在`typedef`前面加上`typename`：
+
+```cpp
+template<typename T>
+class Widget {                              //Widget<T>含有一个
+private:                                    //MyAllocLIst<T>对象
+    typename MyAllocList<T>::type list;     //作为数据成员
+    …
+}; 
+```
+
+这里`MyAllocList<T>::type`使用了一个类型，这个类型依赖于模板参数`T`。因此`MyAllocList<T>::type`是一个依赖类型（*dependent type*），在C++很多讨人喜欢的规则中的一个提到必须要在依赖类型名前加上`typename`。
+
+如果使用别名声明定义一个`MyAllocList`，就不需要使用`typename`（同时省略麻烦的“`::type`”后缀）：
+
+```cpp
+template<typename T> 
+using MyAllocList = std::list<T, MyAlloc<T>>;   //同之前一样
+
+template<typename T> 
+class Widget {
+private:
+    MyAllocList<T> list;                        //没有“typename”
+    …                                           //没有“::type”
+};
+```
+
+对你来说，`MyAllocList<T>`（使用了模板别名声明的版本）可能看起来和`MyAllocList<T>::type`（使用`typedef`的版本）一样都应该依赖模板参数`T`，但是你不是编译器。==当编译器处理`Widget`模板时遇到`MyAllocList<T>`（使用模板别名声明的版本），它们知道`MyAllocList<T>`是一个类型名，因为`MyAllocList`是一个别名模板：它**一定**是一个类型名。因此`MyAllocList<T>`就是一个**非依赖类型**（*non-dependent type*），就不需要也不允许使用`typename`修饰符==。
+
+当编译器在`Widget`的模板中看到`MyAllocList<T>::type`（使用`typedef`的版本），它不能确定那是一个类型的名称。因为可能存在一个`MyAllocList`的它们没见到的特化版本，那个版本的`MyAllocList<T>::type`指代了一种不是类型的东西（**比如？搜一下举个例子**）。那听起来很不可思议，但不要责备编译器穷尽考虑所有可能。因为人确实能写出这样的代码。
+
+举个例子，一个误入歧途的人可能写出这样的代码：
+
+```cpp
+class Wine { … };
+
+template<>                          //当T是Wine
+class MyAllocList<Wine> {           //特化MyAllocList
+private:  
+    enum class WineType             //参见Item10了解  
+    { White, Red, Rose };           //"enum class"
+
+    WineType type;                  //在这个类中，type是
+    …                               //一个数据成员！
+};
+```
+
+==就像你看到的，`MyAllocList<Wine>::type`不是一个类型。如果`Widget`使用`Wine`实例化，在`Widget`模板中的`MyAllocList<Wine>::type`将会是一个数据成员，不是一个类型。在`Widget`模板内，`MyAllocList<T>::type`是否表示一个类型取决于`T`是什么，这就是为什么编译器会坚持要求你在前面加上`typename`==。
+
+如果你尝试过模板元编程（*template metaprogramming*，TMP）， 你一定会碰到取模板类型参数然后基于它创建另一种类型的情况。举个例子，给一个类型`T`，如果你想去掉`T`的常量修饰和引用修饰（`const`- or reference qualifiers），比如你想把`const std::string&`变成`std::string`。又或者你想给一个类型加上`const`或变为左值引用，比如把`Widget`变成`const Widget`或`Widget&`。（如果你没有用过模板元编程，太遗憾了，因为如果你真的想成为一个高效C++程序员，你需要至少熟悉C++在这方面的基本知识。你可以看看在[Item23](https://cntransgroup.github.io/EffectiveModernCppChinese/5.RRefMovSemPerfForw/item23.html)，[27](https://cntransgroup.github.io/EffectiveModernCppChinese/5.RRefMovSemPerfForw/item27.html)里的TMP的应用实例，包括我提到的类型转换）。
+
+C++11在*type traits*（类型特性）中给了你一系列工具去实现类型转换，如果要使用这些模板请包含头文件`<type_traits>`。里面有许许多多*type traits*，也不全是类型转换的工具，也包含一些可预测接口的工具。给一个你想施加转换的类型`T`，结果类型就是`std::`transformation`<T>::type`，比如：
+
+```cpp
+std::remove_const<T>::type          //从const T中产出T
+std::remove_reference<T>::type      //从T&和T&&中产出T
+std::add_lvalue_reference<T>::type  //从T中产出T&
+```
+
+注释仅仅简单的总结了类型转换做了什么，所以不要太随便的使用。在你的项目使用它们之前，你最好看看它们的详细说明书。
+
+尽管写了一些，但我这里不是想给你一个关于*type traits*使用的教程。注意类型转换尾部的`::type`。如果你在一个模板内部将他们施加到类型形参上（实际代码中你也总是这么用），你也需要在它们前面加上`typename`。至于为什么要这么做是因为这些C++11的*type traits*是通过在`struct`内嵌套`typedef`来实现的。是的，它们使用类型同义词（译注：根据上下文指的是使用`typedef`的做法）技术实现，而正如我之前所说这比别名声明要差。
+
+关于为什么这么实现是有历史原因的，但是我们跳过它（我认为太无聊了），因为标准委员会没有及时认识到别名声明是更好的选择，所以直到C++14它们才提供了使用别名声明的版本。这些别名声明有一个通用形式：对于C++11的类型转换`std::`transformation`<T>::type`在C++14中变成了`std::`transformation`_t`。举个例子或许更容易理解：
+
+```cpp
+std::remove_const<T>::type          //C++11: const T → T 
+std::remove_const_t<T>              //C++14 等价形式
+
+std::remove_reference<T>::type      //C++11: T&/T&& → T 
+std::remove_reference_t<T>          //C++14 等价形式
+
+std::add_lvalue_reference<T>::type  //C++11: T → T& 
+std::add_lvalue_reference_t<T>      //C++14 等价形式
+```
+
+C++11的的形式在C++14中也有效，但是我不能理解为什么你要去用它们。就算你没办法使用C++14，使用别名模板也是小儿科。只需要C++11的语言特性，甚至每个小孩都能仿写，对吧？如果你有一份C++14标准，就更简单了，只需要复制粘贴：
+
+```cpp
+template <class T> 
+using remove_const_t = typename remove_const<T>::type;
+
+template <class T> 
+using remove_reference_t = typename remove_reference<T>::type;
+
+template <class T> 
+using add_lvalue_reference_t =
+  typename add_lvalue_reference<T>::type; 
+```
+
+看见了吧？不能再简单了。
+
+**请记住：**
+
+- `typedef`不支持模板化，但是别名声明支持。
+- 别名模板避免了使用“`::type`”后缀，而且在模板中使用`typedef`还需要在前面加上`typename`
+- C++14提供了C++11所有*type traits*转换的别名声明版本
